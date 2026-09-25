@@ -1,0 +1,272 @@
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import {
+  Wallet as WalletIcon, ArrowDownToLine, ArrowUpFromLine, Clock, TrendingUp,
+  Sparkles, ArrowDownLeft, ArrowUpRight, Zap, Inbox,
+} from "lucide-react";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/use-auth";
+import { useProfile } from "@/hooks/use-profile";
+import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Skeleton } from "@/components/ui/skeleton";
+import { TutorialButton } from "@/components/tutorial-button";
+import { AdSlot } from "@/components/ad-slot";
+import { useWithdrawalsHidden } from "@/hooks/use-withdrawals-hidden";
+import { AnimatedCounter } from "@/components/animated-counter";
+
+export const Route = createFileRoute("/app/wallet")({
+  head: () => ({
+    meta: [
+      { title: "Wallet — AxoraBD" },
+      { name: "description", content: "Manage your AxoraBD wallet — view balance, deposits, withdrawals and transaction history." },
+      { property: "og:title", content: "Wallet — AxoraBD" },
+      { property: "og:description", content: "Track your AxoraBD balance and payouts." },
+      { name: "robots", content: "noindex, follow" },
+    ],
+  }),
+  staticData: { title: "Wallet" },
+  component: WalletPage,
+});
+
+const fmt = (n: number) => `৳${Number(n ?? 0).toFixed(2)}`;
+const statusVariant = (s: string) =>
+  s === "approved" || s === "completed" ? "bg-success/20 text-success border-success/30"
+  : s === "rejected" ? "bg-destructive/20 text-destructive border-destructive/30"
+  : "bg-warning/20 text-warning border-warning/30";
+
+function WalletPage() {
+  const { session } = useAuth();
+  const { profile } = useProfile();
+  const [payments, setPayments] = useState<any[]>([]);
+  const [held, setHeld] = useState(0);
+  const [pendingEarnings, setPendingEarnings] = useState(0);
+  const [totalEarned, setTotalEarned] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const withdrawalsHidden = useWithdrawalsHidden();
+
+  const reload = async () => {
+    if (!session?.user) return;
+    const uid = session.user.id;
+    const [p, w, s] = await Promise.all([
+      supabase.from("payments").select("*").eq("user_id", uid).order("created_at", { ascending: false }),
+      supabase.from("payments").select("amount").eq("user_id", uid).eq("type", "withdrawal").eq("status", "pending"),
+      supabase.from("task_submissions").select("status, tasks(reward)").eq("user_id", uid),
+    ]);
+    setPayments(p.data ?? []);
+    setHeld((w.data ?? []).reduce((a, x: any) => a + Number(x.amount ?? 0), 0));
+    const subs = (s.data ?? []) as any[];
+    setPendingEarnings(subs.filter((x) => x.status === "pending").reduce((a, x) => a + Number(x.tasks?.reward ?? 0), 0));
+    setTotalEarned(subs.filter((x) => x.status === "approved").reduce((a, x) => a + Number(x.tasks?.reward ?? 0), 0));
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    reload();
+    if (!session?.user) return;
+    const ch = supabase.channel(`wallet-${session.user.id}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "payments", filter: `user_id=eq.${session.user.id}` }, reload)
+      .on("postgres_changes", { event: "*", schema: "public", table: "task_submissions", filter: `user_id=eq.${session.user.id}` }, reload)
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.user?.id]);
+
+  const available = Number(profile?.balance ?? 0);
+
+  const filterByType = (t: string) => payments.filter((p) => p.type === t);
+
+  return (
+    <>
+      <div className="mb-4 flex justify-end"><TutorialButton sectionKey="wallet" /></div>
+      <AdSlot placement="wallet_top" />
+
+      {/* Premium credit-card style balance */}
+      {loading ? (
+        <Skeleton className="h-44 w-full rounded-2xl mb-6" />
+      ) : (
+        <div className="relative mb-6 rounded-2xl overflow-hidden border border-primary/30 bg-gradient-to-br from-primary via-primary/80 to-primary/40 text-primary-foreground shadow-2xl shadow-primary/30">
+          <div className="absolute -top-16 -right-16 h-48 w-48 rounded-full bg-white/20 blur-3xl" />
+          <div className="absolute -bottom-20 -left-10 h-48 w-48 rounded-full bg-white/10 blur-3xl" />
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.15),transparent_50%)]" />
+          <div className="relative p-6">
+            <div className="flex items-start justify-between mb-6">
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] opacity-80">AxoraBD Wallet</p>
+                <p className="text-[10px] opacity-70 mt-1">Available Balance</p>
+              </div>
+              <div className="h-10 w-10 rounded-xl bg-white/20 backdrop-blur flex items-center justify-center">
+                <Sparkles className="h-5 w-5" />
+              </div>
+            </div>
+            <div className="mb-6">
+              <p className="text-4xl sm:text-5xl font-extrabold tracking-tight tabular-nums">
+                ৳<AnimatedCounter value={available} decimals={2} />
+              </p>
+            </div>
+            <div className="flex items-end justify-between gap-4">
+              <div className="text-xs opacity-80 font-mono tracking-widest truncate">
+                •••• {(session?.user?.id ?? "").slice(-4).toUpperCase() || "USER"}
+              </div>
+              <div className="text-right">
+                <p className="text-[10px] opacity-70 uppercase tracking-wider">Total Earned</p>
+                <p className="text-lg font-bold tabular-nums">{fmt(totalEarned)}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
+        {loading ? (
+          Array.from({ length: 3 }).map((_, i) => (
+            <Card key={i}><CardContent className="p-4 space-y-2">
+              <Skeleton className="h-3 w-20" />
+              <Skeleton className="h-7 w-24" />
+            </CardContent></Card>
+          ))
+        ) : (
+          <>
+            {!withdrawalsHidden && (
+              <Card className="border-warning/20">
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="h-8 w-8 rounded-lg bg-warning/15 flex items-center justify-center">
+                      <Clock className="h-4 w-4 text-warning" />
+                    </div>
+                    <span className="text-xs uppercase tracking-wider text-muted-foreground">Held</span>
+                  </div>
+                  <div className="text-xl font-bold tabular-nums">{fmt(held)}</div>
+                  <p className="text-[10px] text-muted-foreground">Pending withdrawals</p>
+                </CardContent>
+              </Card>
+            )}
+            <Card className="border-blue-500/20">
+              <CardContent className="p-4">
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="h-8 w-8 rounded-lg bg-blue-500/15 flex items-center justify-center">
+                    <Zap className="h-4 w-4 text-blue-500" />
+                  </div>
+                  <span className="text-xs uppercase tracking-wider text-muted-foreground">Pending</span>
+                </div>
+                <div className="text-xl font-bold tabular-nums">{fmt(pendingEarnings)}</div>
+                <p className="text-[10px] text-muted-foreground">Awaiting review</p>
+              </CardContent>
+            </Card>
+            <Card className="border-success/20">
+              <CardContent className="p-4">
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="h-8 w-8 rounded-lg bg-success/15 flex items-center justify-center">
+                    <TrendingUp className="h-4 w-4 text-success" />
+                  </div>
+                  <span className="text-xs uppercase tracking-wider text-muted-foreground">Earned</span>
+                </div>
+                <div className="text-xl font-bold tabular-nums">{fmt(totalEarned)}</div>
+                <p className="text-[10px] text-muted-foreground">All time</p>
+              </CardContent>
+            </Card>
+          </>
+        )}
+      </div>
+
+      <div className="flex flex-wrap gap-2 mb-6">
+        <Button asChild className="bg-gradient-to-r from-primary to-primary/80">
+          <Link to="/app/deposit"><ArrowDownToLine className="h-4 w-4" /> Deposit</Link>
+        </Button>
+        {!withdrawalsHidden && (
+          <Button asChild variant="outline">
+            <Link to="/app/withdraw"><ArrowUpFromLine className="h-4 w-4" /> Withdraw</Link>
+          </Button>
+        )}
+      </div>
+
+      <Card>
+        <CardContent className="p-4">
+          <Tabs defaultValue="all">
+            <TabsList>
+              <TabsTrigger value="all">All</TabsTrigger>
+              <TabsTrigger value="deposit">Deposits</TabsTrigger>
+              {!withdrawalsHidden && <TabsTrigger value="withdrawal">Withdrawals</TabsTrigger>}
+              <TabsTrigger value="activation">Activation</TabsTrigger>
+            </TabsList>
+            {(["all", "deposit", "withdrawal", "activation"] as const)
+              .filter((t) => !(withdrawalsHidden && t === "withdrawal"))
+              .map((t) => (
+              <TabsContent key={t} value={t} className="mt-4">
+                {loading ? (
+                  <div className="space-y-2 py-2">
+                    {Array.from({ length: 4 }).map((_, i) => (
+                      <Skeleton key={i} className="h-10 w-full" />
+                    ))}
+                  </div>
+                ) : (
+                  <TxTable rows={t === "all" ? (withdrawalsHidden ? payments.filter((p) => p.type !== "withdrawal") : payments) : filterByType(t)} />
+                )}
+              </TabsContent>
+            ))}
+          </Tabs>
+        </CardContent>
+      </Card>
+    </>
+  );
+}
+
+function txMeta(type: string) {
+  switch (type) {
+    case "deposit":
+      return { icon: ArrowDownLeft, color: "text-success", bg: "bg-success/15", sign: "+" };
+    case "earning":
+      return { icon: TrendingUp, color: "text-primary", bg: "bg-primary/15", sign: "+" };
+    case "withdrawal":
+      return { icon: ArrowUpRight, color: "text-warning", bg: "bg-warning/15", sign: "−" };
+    case "activation":
+      return { icon: Sparkles, color: "text-blue-500", bg: "bg-blue-500/15", sign: "−" };
+    default:
+      return { icon: WalletIcon, color: "text-muted-foreground", bg: "bg-muted", sign: "" };
+  }
+}
+
+function TxTable({ rows }: { rows: any[] }) {
+  if (!rows.length) {
+    return (
+      <div className="py-12 text-center">
+        <div className="mx-auto h-14 w-14 rounded-full bg-muted/50 flex items-center justify-center mb-3">
+          <Inbox className="h-7 w-7 text-muted-foreground" />
+        </div>
+        <p className="font-medium">No transactions yet</p>
+        <p className="text-xs text-muted-foreground mt-1">Your deposits, withdrawals and earnings will show up here.</p>
+      </div>
+    );
+  }
+  return (
+    <ul className="divide-y divide-border">
+      {rows.map((r) => {
+        const meta = txMeta(r.type);
+        const Icon = meta.icon;
+        const isNegative = meta.sign === "−";
+        return (
+          <li key={r.id} className="flex items-center gap-3 py-3">
+            <div className={`h-10 w-10 shrink-0 rounded-xl flex items-center justify-center ${meta.bg}`}>
+              <Icon className={`h-5 w-5 ${meta.color}`} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <p className="font-medium capitalize truncate">{r.type}</p>
+                <Badge variant="outline" className={`${statusVariant(r.status)} text-[10px]`}>{r.status}</Badge>
+              </div>
+              <p className="text-xs text-muted-foreground truncate">
+                {new Date(r.created_at).toLocaleDateString()} · {r.method ?? "—"}
+                {(r.trnx_id || r.reference) && ` · ${r.trnx_id ?? r.reference}`}
+              </p>
+            </div>
+            <div className={`text-right font-bold tabular-nums shrink-0 ${isNegative ? "text-warning" : "text-success"}`}>
+              {meta.sign}{fmt(r.amount).replace("৳", "৳")}
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
